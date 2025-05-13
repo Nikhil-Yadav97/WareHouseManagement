@@ -1,123 +1,193 @@
 import java.sql.*;
 import java.util.*;
+import javax.swing.*;
 
 public class WarehouseApp {
+    private static Connection conn;
+    private static WarehouseGUI gui;
 
-    public static void main(String[] args) throws Exception {
-        try (Connection conn = DBManager.getConnection()) {
-            Scanner scanner = new Scanner(System.in);
+    public static void main(String[] args) {
+        // Init GUI
+        SwingUtilities.invokeLater(() -> {
+            try {
+                conn = DBManager.getConnection();
+                gui = new WarehouseGUI();
+                setupEventHandlers();
+                refreshProductTable();
+                gui.setVisible(true);
+            } catch (SQLException e) {
+                JOptionPane.showMessageDialog(null, "Database connection error: " + e.getMessage());
+                System.exit(1);
+            }
+        });
+    }
 
-            while (true) {
-                System.out.println("\n--- Warehouse Management Menu ---");
-                System.out.println("1. Add Product");
-                System.out.println("2. Show All Products");
-                System.out.println("3. Find Nearest Product");
-                System.out.println("4. Exit");
-                System.out.print("Enter choice: ");
-                int choice = scanner.nextInt();
+    private static void setupEventHandlers() {
+        // Events
+        gui.addButton.addActionListener(e -> addProduct());
+        gui.deleteButton.addActionListener(e -> deleteProduct());
+        gui.findNearestButton.addActionListener(e -> findNearestProduct());
+        gui.refreshButton.addActionListener(e -> refreshProductTable());
+    }
 
-                if (choice == 1) {
-                    scanner.nextLine(); // clear buffer
-                    System.out.print("Enter product name: ");
-                    String name = scanner.nextLine();
-                    System.out.print("Enter x coordinate: ");
-                    int x = scanner.nextInt();
-                    System.out.print("Enter y coordinate: ");
-                    int y = scanner.nextInt();
+    private static void addProduct() {
+        try {
+            // Get input
+            String name = gui.getNameField().getText().trim();
+            String xText = gui.getXField().getText().trim();
+            String yText = gui.getYField().getText().trim();
 
-                    String sql = "INSERT INTO products(name, x, y) VALUES (?, ?, ?)";
-                    try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                        pstmt.setString(1, name);
-                        pstmt.setInt(2, x);
-                        pstmt.setInt(3, y);
-                        pstmt.executeUpdate();
-                        System.out.println("Product added.");
-                    }
+            if (name.isEmpty() || xText.isEmpty() || yText.isEmpty()) {
+                gui.setStatus("Please fill all fields", true);
+                return;
+            }
 
-                } else if (choice == 2) {
-                    String sql = "SELECT * FROM products";
-                    try (Statement stmt = conn.createStatement();
-                         ResultSet rs = stmt.executeQuery(sql)) {
-                        System.out.println("ID | Name | X | Y");
-                        while (rs.next()) {
-                            System.out.printf("%d | %s | %d | %d\n",
-                                    rs.getInt("id"),
-                                    rs.getString("name"),
-                                    rs.getInt("x"),
-                                    rs.getInt("y"));
-                        }
-                    }
+            int x = Integer.parseInt(xText);
+            int y = Integer.parseInt(yText);
 
-                } else if (choice == 3) {
-                    List<Product> products = new ArrayList<>();
-                    String sql = "SELECT * FROM products";
-                    try (Statement stmt = conn.createStatement();
-                         ResultSet rs = stmt.executeQuery(sql)) {
-                        while (rs.next()) {
-                            products.add(new Product(
-                                    rs.getInt("id"),
-                                    rs.getString("name"),
-                                    rs.getInt("x"),
-                                    rs.getInt("y")
-                            ));
-                        }
-                    }
+            // Save
+            String sql = "INSERT INTO products(name, x, y) VALUES (?, ?, ?)";
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                pstmt.setString(1, name);
+                pstmt.setInt(2, x);
+                pstmt.setInt(3, y);
+                pstmt.executeUpdate();
+                gui.setStatus("Product added successfully", false);
+                gui.clearInputFields();
+                refreshProductTable();
+            }
+        } catch (NumberFormatException e) {
+            gui.setStatus("Please enter valid coordinates", true);
+        } catch (SQLException e) {
+            gui.setStatus("Error adding product: " + e.getMessage(), true);
+        }
+    }
 
-                    if (products.size() < 2) {
-                        System.out.println("At least two products required.");
-                        continue;
-                    }
+    private static void deleteProduct() {
+        try {
+            // Get selection
+            int row = gui.getProductTable().getSelectedRow();
+            if (row == -1) {
+                gui.setStatus("Please select a product to delete", true);
+                return;
+            }
 
-                    System.out.print("Enter source product ID: ");
-                    int sourceId = scanner.nextInt();
+            // Delete
+            int id = (int) gui.getTableModel().getValueAt(row, 0);
+            String sql = "DELETE FROM products WHERE id = ?";
+            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
+                pstmt.setInt(1, id);
+                int rowsAffected = pstmt.executeUpdate();
+                if (rowsAffected > 0) {
+                    gui.setStatus("Product deleted successfully", false);
+                    refreshProductTable();
+                }
+            }
+        } catch (SQLException e) {
+            gui.setStatus("Error deleting product: " + e.getMessage(), true);
+        }
+    }
 
-                    int startIndex = -1;
-                    for (int i = 0; i < products.size(); i++) {
-                        if (products.get(i).id == sourceId) {
-                            startIndex = i;
-                            break;
-                        }
-                    }
+    private static void findNearestProduct() {
+        try {
+            // Get source
+            int row = gui.getProductTable().getSelectedRow();
+            if (row == -1) {
+                gui.setStatus("Please select a source product", true);
+                return;
+            }
 
-                    if (startIndex == -1) {
-                        System.out.println("Invalid ID.");
-                        continue;
-                    }
+            String targetName = JOptionPane.showInputDialog(gui, "Enter target product name:");
+            if (targetName == null || targetName.trim().isEmpty()) {
+                return;
+            }
 
-                    scanner.nextLine(); // clear buffer
-                    System.out.print("Enter target product name: ");
-                    String targetName = scanner.nextLine();
-
-                    int n = products.size();
-                    int[][] graph = new int[n][n];
-
-                    for (int i = 0; i < n; i++) {
-                        for (int j = 0; j < n; j++) {
-                            if (i != j) {
-                                int dx = products.get(i).x - products.get(j).x;
-                                int dy = products.get(i).y - products.get(j).y;
-                                graph[i][j] = (int) Math.sqrt(dx * dx + dy * dy);
-                            }
-                        }
-                    }
-
-                    int nearestIdx = Dijkstra.findNearestProduct(targetName, products, graph, startIndex);
-                    if (nearestIdx != -1) {
-                        Product p = products.get(nearestIdx);
-                        System.out.println("Nearest product '" + targetName + "' is at (" + p.x + "," + p.y + "), ID: " + p.id);
-                    } else {
-                        System.out.println("No other product with that name found.");
-                    }
-
-                } else if (choice == 4) {
-                    System.out.println("Exiting...");
-                    break;
-                } else {
-                    System.out.println("Invalid choice!");
+            // Load data
+            List<Product> products = new ArrayList<>();
+            try (Statement stmt = conn.createStatement();
+                    ResultSet rs = stmt.executeQuery("SELECT * FROM products")) {
+                while (rs.next()) {
+                    products.add(new Product(
+                            rs.getInt("id"),
+                            rs.getString("name"),
+                            rs.getInt("x"),
+                            rs.getInt("y")));
                 }
             }
 
-            scanner.close();
+            if (products.size() < 2) {
+                gui.setStatus("At least two products required", true);
+                return;
+            }
+
+            // Find nearest
+            int sourceId = (int) gui.getTableModel().getValueAt(row, 0);
+            int startIndex = -1;
+            for (int i = 0; i < products.size(); i++) {
+                if (products.get(i).id == sourceId) {
+                    startIndex = i;
+                    break;
+                }
+            }
+
+            int nearestIdx = findNearestProduct(targetName, products, startIndex);
+            if (nearestIdx != -1) {
+                Product p = products.get(nearestIdx);
+                String message = String.format("Nearest product '%s' found!\n\nLocation: (%d, %d)\nProduct ID: %d",
+                        targetName, p.x, p.y, p.id);
+                JOptionPane.showMessageDialog(gui,
+                        message,
+                        "Nearest Product Found",
+                        JOptionPane.INFORMATION_MESSAGE);
+            } else {
+                JOptionPane.showMessageDialog(gui,
+                        "No other product with that name found.",
+                        "Product Not Found",
+                        JOptionPane.WARNING_MESSAGE);
+            }
+        } catch (SQLException e) {
+            gui.setStatus("Error finding nearest product: " + e.getMessage(), true);
+        }
+    }
+
+    private static int findNearestProduct(String targetName, List<Product> products, int startIndex) {
+        // Calculate
+        int nearestIdx = -1;
+        int minDistance = Integer.MAX_VALUE;
+        Product source = products.get(startIndex);
+
+        for (int i = 0; i < products.size(); i++) {
+            if (i != startIndex && products.get(i).name.equalsIgnoreCase(targetName)) {
+                Product target = products.get(i);
+                int distance = (int) Math.sqrt(
+                        Math.pow(source.x - target.x, 2) +
+                                Math.pow(source.y - target.y, 2));
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    nearestIdx = i;
+                }
+            }
+        }
+        return nearestIdx;
+    }
+
+    private static void refreshProductTable() {
+        try {
+            // Refresh
+            gui.getTableModel().setRowCount(0);
+            try (Statement stmt = conn.createStatement();
+                    ResultSet rs = stmt.executeQuery("SELECT * FROM products")) {
+                while (rs.next()) {
+                    gui.getTableModel().addRow(new Object[] {
+                            rs.getInt("id"),
+                            rs.getString("name"),
+                            rs.getInt("x"),
+                            rs.getInt("y")
+                    });
+                }
+            }
+        } catch (SQLException e) {
+            gui.setStatus("Error refreshing table: " + e.getMessage(), true);
         }
     }
 }
